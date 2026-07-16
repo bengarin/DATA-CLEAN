@@ -32,17 +32,19 @@ The analyzer returns a 0–100 score built from six sub-metrics. An image is
 | Metric      | Max | What it measures                                                        |
 |-------------|-----|-------------------------------------------------------------------------|
 | Sharpness   | 30  | Laplacian variance (blur detection)                                     |
-| Brightness  | 20  | Grayscale mean — wide band so white paper is not "overexposed"          |
+| Brightness  | 20  | Mean luminance **of the paper itself** — a dark table does not count as "dark" |
 | Contrast    | 15  | Ink-vs-paper separation **inside content cells**, not global std-dev    |
 | Perspective | 15  | Document rectangularity / skew (pure rotation is not penalized)         |
 | Resolution  | 10  | Effective megapixels of the original upload                             |
 | Detection   | 10  | Is a **complete** document present and filling the frame                |
 
 An image is also **hard-rejected** when the *entire document is not visible* —
-i.e. the page is small in the frame, partially covered by another object, or
-cut off (measured as `coverage × rectangularity`). A full page photographed
-straight-on passes even if it is rotated; a page half-hidden under an envelope
-on a table does not.
+i.e. the page fills less than ~55% of the frame because it is too far away, cut
+off, or partially covered by another object (so part of the data is missing).
+The document's **shape, layout and aspect ratio do not matter, and rotation is
+not penalized** — only that the whole page is present and close enough to read.
+A full page photographed straight-on or sideways passes; a page half-hidden
+under an envelope on a table does not.
 
 ### Why photos were being falsely rejected — and what changed
 
@@ -59,8 +61,10 @@ causes and fixes:
   produced a clean quad, so they scored **0**. Detection now finds the dominant
   bright document region against the background and judges coverage + text
   structure; perspective rewards a roughly rectangular, roughly aligned page.
-- **Brightness** band was too narrow for bright paper. It is now wide and only
-  penalizes genuine darkness or a fully blown-out frame.
+- **Brightness** was measured over the whole frame, so a readable page on a
+  dark table was flagged *"Low brightness"*. It is now measured on the **paper
+  region only**, and a bright, well-lit page is never penalized for being
+  bright (overexposure is only flagged when the text washes out with it).
 - **Accept threshold** was 80 (a well-lit readable page scoring 71 was
   rejected). It is now 70, gated by "no hard failure".
 

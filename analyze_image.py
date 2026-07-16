@@ -49,24 +49,20 @@ def _document_region(gray):
     frame_area = float(w * h)
 
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-    _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # Make the paper the white side of the mask.
-    if np.mean(mask) < 127:
-        mask = cv2.bitwise_not(mask)
+    # The paper/document is the BRIGHT cluster (above the Otsu threshold),
+    # regardless of whether it is the majority of the frame. Keying off the
+    # bright side works whether the page fills the frame or sits small on a
+    # dark table.
+    thr, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = (blurred >= max(1, int(thr))).astype(np.uint8) * 255
 
-    bright_fraction = float(np.mean(mask > 0))
-
-    # When the page already fills the frame there is no background to segment;
-    # that is a well-framed document, not a missing one.
-    if bright_fraction > 0.85:
-        return min(1.0, bright_fraction), 1.0, 0.0
-
+    # Close the dark text holes so the paper reads as one solid region.
     mask = cv2.morphologyEx(
         mask, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8), iterations=2
     )
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return bright_fraction, 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
     largest = max(contours, key=cv2.contourArea)
     area = cv2.contourArea(largest)
@@ -79,6 +75,24 @@ def _document_region(gray):
     skew = min(skew, 90 - skew)  # fold into 0..45
 
     return coverage, min(1.0, rectangularity), float(skew)
+
+
+def _paper_brightness(gray):
+    """Mean luminance of the document (paper) itself, not the whole frame.
+
+    A readable page photographed on a dark table must not be judged "too dark"
+    just because the background is dark, so brightness is measured on the
+    brighter (paper) side of an Otsu split. Falls back to the whole-frame mean
+    when there is no distinct bright region.
+    """
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    thr, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Paper = the bright cluster (above the Otsu threshold), never the darker
+    # background, so the paper's own illumination is what gets measured.
+    paper = gray[blurred >= max(1, int(thr))]
+    if paper.size < 0.03 * gray.size:
+        return float(np.mean(gray))
+    return float(np.mean(paper))
 
 
 def analyze_image(image_path):
@@ -103,36 +117,38 @@ def analyze_image(image_path):
         laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
         sharpness_score = int(min(30, max(0, (laplacian_var / 400.0) * 30)))
 
-        # 3. Brightness — grayscale mean with a WIDE band, because a photo of a
-        #    document is mostly bright paper. Only genuine darkness or a fully
-        #    blown-out frame is penalized (no more "overexposed" white pages).
-        brightness = float(np.mean(gray))
-        if 105 <= brightness <= 238:
+        # 3. Brightness — measured on the paper itself (not the whole frame, so
+        #    a dark background/table does not count as "dark"). Paper is meant
+        #    to be bright, so only genuine low light loses points; a bright,
+        #    well-lit page is never penalized for being bright.
+        brightness = _paper_brightness(gray)
+        if brightness >= 110:
             brightness_score = 20
-        elif brightness < 105:
-            brightness_score = int(max(0, 20 * (brightness - 45) / 60))
         else:
-            brightness_score = int(max(0, 20 * (252 - brightness) / 14))
+            brightness_score = int(max(0, 20 * (brightness - 45) / 65))  # 45->0,110->20
 
         # 4. Contrast — local ink/paper separation, not global std-dev.
         separation, content_fill = _grid_local_contrast(gray)
         contrast_score = int(min(15, max(0, (separation / 120.0) * 15)))
 
         # 5. Document detection + perspective.
+        #    The shape / framing / aspect ratio of the photo does NOT matter —
+        #    only whether a complete, readable document is present. A clean
+        #    rectangular page is accepted whether it fills the frame or sits in
+        #    the middle with a margin, and whether or not it is rotated. What is
+        #    rejected is a document that is partially covered, torn, or cut off
+        #    (an irregular region), because then part of the data is missing.
         coverage, rectangularity, skew = _document_region(gray)
 
-        #    Completeness = how much of a *whole* document rectangle is visible.
-        #    A page that fills the frame as a clean rectangle scores ~1.0; a
-        #    page that is small in frame, partially covered by another object,
-        #    or torn scores low. This is the "entire document visible" check.
-        completeness = coverage * rectangularity
-
-        #    Detection: is a complete, structured document present and framed?
-        detection_score = int(round(10 * min(1.0, completeness / 0.55)))
+        coverage_term = min(1.0, coverage / 0.70)       # document fills the frame?
+        rect_term = min(1.0, rectangularity / 0.80)     # clean rectangle?
+        structure_term = min(1.0, content_fill / 0.20)  # readable text present?
+        detection_score = int(round(
+            10 * (0.5 * coverage_term + 0.2 * rect_term + 0.3 * structure_term)
+        ))
 
         #    Perspective: reward a rectangular, roughly aligned page. Pure
         #    rotation (skew folded into 0..45) is fine; only real skew loses.
-        rect_term = min(1.0, rectangularity / 0.80)
         if skew <= 8:
             skew_term = 1.0
         elif skew >= 30:
@@ -154,9 +170,12 @@ def analyze_image(image_path):
         reasons = []
         if sharpness_score < 12:
             reasons.append("Image is blurry")
-        if brightness < 80:
+        if brightness < 85:
             reasons.append("Low brightness")
-        elif brightness > 246:
+        elif brightness > 248 and contrast_score < 6 and sharpness_score >= 12:
+            # Blown out only if the paper is white *and* the text washed out
+            # with it (contrast collapsed) on an otherwise sharp image — a
+            # bright readable page is fine, and blur is reported separately.
             reasons.append("Image is overexposed")
         if contrast_score < 5:
             reasons.append("Low contrast")
@@ -164,8 +183,11 @@ def analyze_image(image_path):
             reasons.append("Low resolution")
         if content_fill < 0.05:
             reasons.append("No document detected")
-        elif completeness < 0.45:
-            # Document is small in frame, partially covered, or cut off.
+        elif coverage < 0.55:
+            # The document does not fill enough of the frame: it is too far
+            # away, cut off, or partially covered by another object, so part of
+            # the data is missing. Aspect ratio / rotation are NOT judged here —
+            # only that the whole page is present and close enough to read.
             reasons.append("Entire document not visible or partially covered")
 
         # Accept when the quality is high enough AND nothing is hard-broken.
