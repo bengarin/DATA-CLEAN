@@ -5,19 +5,28 @@ import numpy as np
 
 
 def _grid_local_contrast(gray):
-    """Ink-vs-paper separation measured inside the cells that actually carry
-    content, instead of a global std-dev.
+    """Contrast AND sharpness measured inside the cells that actually carry
+    content, instead of over the whole frame.
 
-    A real document is mostly uniform bright paper with sparse dark text, so a
-    global std-dev collapses toward zero and falsely reports "low contrast".
-    Splitting the image into a grid and looking at the per-cell (max - min)
-    range captures how cleanly ink separates from paper regardless of how much
-    empty margin surrounds the text.
+    A real document is mostly uniform bright paper with sparse dark text. A
+    global std-dev collapses toward zero ("low contrast") and a global Laplacian
+    variance is dragged down by the empty paper ("blurry") even when the text
+    itself is crisp and readable. Looking at each grid cell that has real
+    detail — its ink/paper range and its local Laplacian variance — captures how
+    legible and how sharp the *text* is, regardless of how much blank margin
+    surrounds it.
+
+    Returns (separation, sharpness, fill):
+      separation  75th-percentile ink/paper range across content cells
+      sharpness   80th-percentile Laplacian variance across content cells
+      fill        fraction of the frame that carries content
     """
     h, w = gray.shape[:2]
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
     rows, cols = 24, 24
     ch, cw = max(1, h // rows), max(1, w // cols)
     ranges = []
+    sharps = []
     for cy in range(rows):
         y0, y1 = cy * ch, min(h, (cy + 1) * ch)
         for cx in range(cols):
@@ -28,12 +37,13 @@ def _grid_local_contrast(gray):
             rng = int(cell.max()) - int(cell.min())
             if rng > 40:  # a cell that carries real detail (text/lines)
                 ranges.append(rng)
+                sharps.append(float(lap[y0:y1, x0:x1].var()))
     if not ranges:
-        return 0.0, 0.0
-    # 75th percentile of content-cell ranges = typical strong ink/paper gap.
+        return 0.0, 0.0, 0.0
     separation = float(np.percentile(ranges, 75))
+    sharpness = float(np.percentile(sharps, 80))
     fill = len(ranges) / float(rows * cols)  # how much of the frame has content
-    return separation, fill
+    return separation, sharpness, fill
 
 
 def _document_region(gray):
@@ -113,9 +123,12 @@ def analyze_image(image_path):
         else:
             resolution_score = int(round(10 * (megapixels - 0.25) / (1.5 - 0.25)))
 
-        # 2. Sharpness (variance of the Laplacian) — blur detection.
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        sharpness_score = int(min(30, max(0, (laplacian_var / 400.0) * 30)))
+        # Content-cell stats: sharpness and contrast of the TEXT itself, so
+        # large blank areas of a sparse page do not drag them down.
+        separation, cell_sharpness, content_fill = _grid_local_contrast(gray)
+
+        # 2. Sharpness (Laplacian variance of the text regions) — blur detection.
+        sharpness_score = int(min(30, max(0, (cell_sharpness / 900.0) * 30)))
 
         # 3. Brightness — measured on the paper itself (not the whole frame, so
         #    a dark background/table does not count as "dark"). Paper is meant
@@ -128,7 +141,6 @@ def analyze_image(image_path):
             brightness_score = int(max(0, 20 * (brightness - 45) / 65))  # 45->0,110->20
 
         # 4. Contrast — local ink/paper separation, not global std-dev.
-        separation, content_fill = _grid_local_contrast(gray)
         contrast_score = int(min(15, max(0, (separation / 120.0) * 15)))
 
         # 5. Document detection + perspective.

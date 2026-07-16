@@ -31,7 +31,7 @@ The analyzer returns a 0–100 score built from six sub-metrics. An image is
 
 | Metric      | Max | What it measures                                                        |
 |-------------|-----|-------------------------------------------------------------------------|
-| Sharpness   | 30  | Laplacian variance (blur detection)                                     |
+| Sharpness   | 30  | Laplacian variance **of the text regions** (blur detection, ignores blank margins) |
 | Brightness  | 20  | Mean luminance **of the paper itself** — a dark table does not count as "dark" |
 | Contrast    | 15  | Ink-vs-paper separation **inside content cells**, not global std-dev    |
 | Perspective | 15  | Document rectangularity / skew (pure rotation is not penalized)         |
@@ -52,6 +52,12 @@ Real, perfectly readable documents (white paper, printed tables, photographed
 on a table with a torn corner or a slight tilt) were being **rejected**. The
 causes and fixes:
 
+- **Sharpness** used the Laplacian variance of the whole frame. A page that is
+  mostly blank paper with a small block of text has a low global variance, so a
+  perfectly readable sparse page was flagged *"Image is blurry"*. It now
+  measures sharpness **inside the text regions only**, so crisp text is scored
+  as sharp no matter how much empty paper surrounds it — while a genuinely
+  out-of-focus page still collapses to a low score.
 - **Contrast** used a global `std(gray)`. A page that is mostly white paper
   with sparse dark text has a low global std-dev, so it was flagged
   *"Low contrast"*. It now measures the ink/paper separation **inside the cells
