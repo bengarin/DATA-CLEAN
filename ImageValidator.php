@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/ApiClient.php';
 
 /**
  * Validates the incoming upload locally (presence, size, real image type),
@@ -11,18 +10,9 @@ require_once __DIR__ . '/ApiClient.php';
  */
 final class ImageValidator
 {
-    private ApiClient $apiClient;
-
     /** @param array<string, mixed> $config */
     public function __construct(private readonly array $config)
     {
-        $this->apiClient = new ApiClient(
-            $config['external_api']['url'],
-            $config['external_api']['api_key'],
-            $config['external_api']['field_name'],
-            $config['external_api']['timeout'],
-            $config['external_api']['connect_timeout'],
-        );
     }
 
     /**
@@ -37,7 +27,25 @@ final class ImageValidator
             $mimeType = $this->detectMimeType($file['tmp_name']);
             $this->assertAllowedMimeType($mimeType);
 
-            $result = $this->apiClient->validateImage($file['tmp_name'], $file['name'], $mimeType);
+            $pythonPath = escapeshellcmd($this->config['analyzer']['python_path'] ?? 'python');
+            $scriptPath = escapeshellarg($this->config['analyzer']['script_path']);
+            $imagePath  = escapeshellarg($file['tmp_name']);
+            
+            $command = "$pythonPath $scriptPath $imagePath";
+            $output = shell_exec($command);
+            
+            if ($output === null) {
+                throw new RuntimeException("Failed to execute image analyzer script.", 500);
+            }
+            
+            $result = json_decode(trim($output), true);
+            if (!is_array($result)) {
+                throw new RuntimeException("Analyzer returned invalid JSON.", 500);
+            }
+            
+            if (($result['status'] ?? '') === 'error') {
+                throw new RuntimeException($result['message'] ?? 'Analyzer error', 500);
+            }
 
             return ['httpStatus' => 200, 'body' => $result];
         } catch (InvalidArgumentException $e) {

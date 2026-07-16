@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Quality Analyzer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: rgba(30, 41, 59, 0.7);
+            --primary: #6366f1;
+            --primary-hover: #818cf8;
+            --success: #10b981;
+            --error: #ef4444;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background: linear-gradient(135deg, #0f172a, #1e1b4b);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+
+        .container {
+            background: var(--surface);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            padding: 3rem;
+            width: 100%;
+            max-width: 600px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            transition: all 0.3s ease;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(to right, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            color: var(--text-muted);
+        }
+
+        .upload-area {
+            border: 2px dashed rgba(255, 255, 255, 0.2);
+            border-radius: 16px;
+            padding: 3rem 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .upload-area:hover, .upload-area.dragover {
+            border-color: var(--primary);
+            background: rgba(99, 102, 241, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            display: inline-block;
+        }
+
+        .upload-text {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .upload-subtext {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        #preview-container {
+            display: none;
+            margin-top: 1.5rem;
+            text-align: center;
+            animation: fadeIn 0.4s ease forwards;
+        }
+
+        #image-preview {
+            max-width: 100%;
+            max-height: 250px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-analyze {
+            width: 100%;
+            padding: 1rem;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--primary), #4f46e5);
+            color: white;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 1.5rem;
+            transition: all 0.3s ease;
+            display: none;
+            box-shadow: 0 10px 20px -10px var(--primary);
+        }
+
+        .btn-analyze:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 25px -10px var(--primary);
+        }
+
+        .btn-analyze:active {
+            transform: translateY(0);
+        }
+
+        .loader {
+            display: none;
+            width: 24px;
+            height: 24px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+            margin: 0 auto;
+        }
+
+        .result-box {
+            display: none;
+            margin-top: 2rem;
+            padding: 2rem;
+            border-radius: 16px;
+            background: rgba(0, 0, 0, 0.2);
+            animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .decision-badge {
+            padding: 0.5rem 1.2rem;
+            border-radius: 50px;
+            font-weight: 800;
+            font-size: 1.1rem;
+            letter-spacing: 1px;
+        }
+
+        .accepted {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .rejected {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--error);
+            border: 1px solid var(--error);
+        }
+
+        .score-display {
+            font-size: 2.5rem;
+            font-weight: 800;
+        }
+
+        .reasons-list {
+            list-style: none;
+            margin-top: 1rem;
+        }
+
+        .reasons-list li {
+            padding: 0.8rem 1rem;
+            background: rgba(239, 68, 68, 0.1);
+            border-left: 4px solid var(--error);
+            margin-bottom: 0.5rem;
+            border-radius: 0 8px 8px 0;
+            color: #fca5a5;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        .metric-item {
+            background: rgba(255,255,255,0.03);
+            padding: 0.8rem;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+        }
+
+        .metric-label { color: var(--text-muted); }
+        .metric-value { font-weight: 600; }
+
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { 
+            from { opacity: 0; transform: translateY(20px); } 
+            to { opacity: 1; transform: translateY(0); } 
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="header">
+            <h1>DocQuality AI</h1>
+            <p>Upload a document photo to validate its quality for OCR.</p>
+        </div>
+
+        <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
+            <span class="upload-icon">📸</span>
+            <div class="upload-text">Click or drag an image here</div>
+            <div class="upload-subtext">JPG, PNG, WEBP up to 10MB</div>
+            <input type="file" id="file-input" accept="image/jpeg, image/png, image/webp">
+        </div>
+
+        <div id="preview-container">
+            <img id="image-preview" src="" alt="Preview">
+        </div>
+
+        <button class="btn-analyze" id="btn-analyze" onclick="analyzeImage()">
+            <span class="btn-text">Analyze Quality</span>
+            <div class="loader"></div>
+        </button>
+
+        <div class="result-box" id="result-box">
+            <div class="result-header">
+                <div class="decision-badge" id="decision-badge">PENDING</div>
+                <div class="score-display" id="score-display">0%</div>
+            </div>
+            
+            <div id="reasons-container">
+                <h4 style="color: var(--text-muted); margin-bottom: 0.5rem; display: none;" id="reasons-title">Issues Detected:</h4>
+                <ul class="reasons-list" id="reasons-list"></ul>
+            </div>
+
+            <div class="metrics-grid" id="metrics-grid"></div>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const uploadArea = document.getElementById('upload-area');
+        const previewContainer = document.getElementById('preview-container');
+        const imagePreview = document.getElementById('image-preview');
+        const btnAnalyze = document.getElementById('btn-analyze');
+        const resultBox = document.getElementById('result-box');
+        
+        let selectedFile = null;
+
+        // Drag and drop handlers
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if(e.dataTransfer.files.length) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if(e.target.files.length) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            if(!file.type.startsWith('image/')) {
+                alert('Please upload an image file.');
+                return;
+            }
+            selectedFile = file;
+            
+            // Show preview
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                imagePreview.src = e.target.result;
+                previewContainer.style.display = 'block';
+                btnAnalyze.style.display = 'block';
+                resultBox.style.display = 'none'; // Hide previous results
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function analyzeImage() {
+            if(!selectedFile) return;
+
+            // UI State loading
+            btnAnalyze.querySelector('.btn-text').style.display = 'none';
+            btnAnalyze.querySelector('.loader').style.display = 'block';
+            btnAnalyze.style.pointerEvents = 'none';
+            resultBox.style.display = 'none';
+
+            const formData = new FormData();
+            formData.append('image', selectedFile);
+
+            try {
+                // Call the API
+                const response = await fetch('/index.php', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                
+                // Reset button
+                btnAnalyze.querySelector('.btn-text').style.display = 'block';
+                btnAnalyze.querySelector('.loader').style.display = 'none';
+                btnAnalyze.style.pointerEvents = 'auto';
+
+                showResult(data);
+
+            } catch (error) {
+                alert('An error occurred while contacting the API.');
+                console.error(error);
+                btnAnalyze.querySelector('.btn-text').style.display = 'block';
+                btnAnalyze.querySelector('.loader').style.display = 'none';
+                btnAnalyze.style.pointerEvents = 'auto';
+            }
+        }
+
+        function showResult(data) {
+            resultBox.style.display = 'block';
+            
+            const badge = document.getElementById('decision-badge');
+            const scoreDisplay = document.getElementById('score-display');
+            const reasonsList = document.getElementById('reasons-list');
+            const reasonsTitle = document.getElementById('reasons-title');
+            const metricsGrid = document.getElementById('metrics-grid');
+
+            // Clear previous
+            reasonsList.innerHTML = '';
+            metricsGrid.innerHTML = '';
+
+            if(data.status === 'error') {
+                badge.textContent = 'ERROR';
+                badge.className = 'decision-badge rejected';
+                scoreDisplay.textContent = 'N/A';
+                reasonsTitle.style.display = 'block';
+                const li = document.createElement('li');
+                li.textContent = data.message;
+                reasonsList.appendChild(li);
+                return;
+            }
+
+            // Normal response
+            badge.textContent = data.decision;
+            badge.className = 'decision-badge ' + (data.decision === 'ACCEPTED' ? 'accepted' : 'rejected');
+            scoreDisplay.textContent = data.score + '%';
+
+            // Show reasons if any
+            if(data.reasons && data.reasons.length > 0) {
+                reasonsTitle.style.display = 'block';
+                data.reasons.forEach(r => {
+                    const li = document.createElement('li');
+                    li.textContent = r;
+                    reasonsList.appendChild(li);
+                });
+            } else {
+                reasonsTitle.style.display = 'none';
+            }
+
+            // Show metrics
+            if(data.metrics) {
+                for (const [key, value] of Object.entries(data.metrics)) {
+                    const div = document.createElement('div');
+                    div.className = 'metric-item';
+                    div.innerHTML = `<span class="metric-label">${key.charAt(0).toUpperCase() + key.slice(1)}</span>
+                                     <span class="metric-value">${value}</span>`;
+                    metricsGrid.appendChild(div);
+                }
+            }
+        }
+    </script>
+</body>
+</html>

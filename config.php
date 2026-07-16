@@ -32,16 +32,9 @@ function loadEnvFile(string $path): void
 loadEnvFile(__DIR__ . '/.env');
 
 return [
-    'external_api' => [
-        // Endpoint of the external Image Quality Validation API.
-        'url' => getenv('EXTERNAL_API_URL') ?: '',
-        // Optional bearer token, sent as "Authorization: Bearer <key>" if set.
-        'api_key' => getenv('EXTERNAL_API_KEY') ?: '',
-        // Field name the external API expects the file under.
-        'field_name' => getenv('EXTERNAL_API_FIELD_NAME') ?: 'image',
-        // Seconds before the outbound cURL request to the external API times out.
-        'timeout' => (int) (getenv('EXTERNAL_API_TIMEOUT') ?: 15),
-        'connect_timeout' => (int) (getenv('EXTERNAL_API_CONNECT_TIMEOUT') ?: 10),
+    'analyzer' => [
+        'python_path' => getenv('PYTHON_PATH') ?: 'python',
+        'script_path' => __DIR__ . '/analyze_image.py',
     ],
 
     'upload' => [
