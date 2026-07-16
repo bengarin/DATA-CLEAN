@@ -1,0 +1,10 @@
+# Route everything through the front controller.
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [L]
+
+# Never serve the .env file or any dotfile directly.
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
