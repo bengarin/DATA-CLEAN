@@ -34,9 +34,15 @@ The analyzer returns a 0–100 score built from six sub-metrics. An image is
 | Sharpness   | 30  | Laplacian variance (blur detection)                                     |
 | Brightness  | 20  | Grayscale mean — wide band so white paper is not "overexposed"          |
 | Contrast    | 15  | Ink-vs-paper separation **inside content cells**, not global std-dev    |
-| Perspective | 15  | Document rectangularity / skew (lenient — never rejects a readable page) |
+| Perspective | 15  | Document rectangularity / skew (pure rotation is not penalized)         |
 | Resolution  | 10  | Effective megapixels of the original upload                             |
-| Detection   | 10  | Is a structured document actually present and framed                    |
+| Detection   | 10  | Is a **complete** document present and filling the frame                |
+
+An image is also **hard-rejected** when the *entire document is not visible* —
+i.e. the page is small in the frame, partially covered by another object, or
+cut off (measured as `coverage × rectangularity`). A full page photographed
+straight-on passes even if it is rotated; a page half-hidden under an envelope
+on a table does not.
 
 ### Why photos were being falsely rejected — and what changed
 

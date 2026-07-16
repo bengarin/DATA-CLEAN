@@ -118,19 +118,21 @@ def analyze_image(image_path):
         separation, content_fill = _grid_local_contrast(gray)
         contrast_score = int(min(15, max(0, (separation / 120.0) * 15)))
 
-        # 5. Document detection + perspective — robust to imperfect pages.
+        # 5. Document detection + perspective.
         coverage, rectangularity, skew = _document_region(gray)
 
-        #    Detection: is a structured document present and framed? Combine
-        #    how much of the frame it covers with how much text structure there
-        #    is (content_fill). Lenient — a readable page is never scored 0.
-        coverage_term = min(1.0, coverage / 0.35)        # ~35% coverage -> full
-        structure_term = min(1.0, content_fill / 0.20)   # some text present
-        detection_score = int(round(10 * (0.6 * coverage_term + 0.4 * structure_term)))
+        #    Completeness = how much of a *whole* document rectangle is visible.
+        #    A page that fills the frame as a clean rectangle scores ~1.0; a
+        #    page that is small in frame, partially covered by another object,
+        #    or torn scores low. This is the "entire document visible" check.
+        completeness = coverage * rectangularity
 
-        #    Perspective: reward a roughly rectangular, roughly aligned page.
-        #    Only a strong, confident skew loses many points.
-        rect_term = min(1.0, rectangularity / 0.75)
+        #    Detection: is a complete, structured document present and framed?
+        detection_score = int(round(10 * min(1.0, completeness / 0.55)))
+
+        #    Perspective: reward a rectangular, roughly aligned page. Pure
+        #    rotation (skew folded into 0..45) is fine; only real skew loses.
+        rect_term = min(1.0, rectangularity / 0.80)
         if skew <= 8:
             skew_term = 1.0
         elif skew >= 30:
@@ -160,8 +162,11 @@ def analyze_image(image_path):
             reasons.append("Low contrast")
         if resolution_score < 4:
             reasons.append("Low resolution")
-        if detection_score < 3:
-            reasons.append("Document not detected clearly")
+        if content_fill < 0.05:
+            reasons.append("No document detected")
+        elif completeness < 0.45:
+            # Document is small in frame, partially covered, or cut off.
+            reasons.append("Entire document not visible or partially covered")
 
         # Accept when the quality is high enough AND nothing is hard-broken.
         decision = "ACCEPTED" if (total_score >= 70 and not reasons) else "REJECTED"
