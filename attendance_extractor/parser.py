@@ -21,7 +21,6 @@ from typing import Optional
 import numpy as np
 
 from config import (
-    CELL_CROP_PADDING,
     HEADER_FIELDS,
     TABLE_COLUMNS,
 )
@@ -161,23 +160,32 @@ def _assign_columns(row: list[Cell]) -> dict[str, Cell]:
 # --------------------------------------------------------------------------- #
 # Body reading
 # --------------------------------------------------------------------------- #
-def read_body(body: list[list[Cell]], gray: np.ndarray,
-              engine: OcrEngine) -> list[dict]:
-    """Read every body cell and return raw (pre-alignment) row dicts."""
+def _line_center(box) -> tuple[float, float]:
+    xs = [p[0] for p in box]
+    ys = [p[1] for p in box]
+    return sum(xs) / len(xs), sum(ys) / len(ys)
+
+
+def read_body_from_lines(body: list[list[Cell]], lines: list[OcrLine]) -> list[dict]:
+    """Assign each full-page OCR line to the body cell that contains it.
+
+    Reading the whole page once and mapping text boxes onto the detected grid
+    is far more reliable than OCR-ing each tiny single-value crop — PaddleOCR's
+    detector often finds nothing in an isolated cell-sized image.
+    """
+    centers = [(_line_center(ln.box), ln.text) for ln in lines if ln.box and ln.text]
+
     rows: list[dict] = []
     for row in body:
         mapping = _assign_columns(row)
         record = {"date": "", **{c: "" for c in HOUR_COLUMNS}}
-        confidences: list[float] = []
         for col, cell in mapping.items():
-            crop = cell.crop(gray, pad=CELL_CROP_PADDING)
-            text, conf = engine.read_cell(crop)
-            confidences.append(conf)
-            if col == "date":
-                record["date"] = text
-            else:
-                record[col] = text
-        record["_conf"] = float(np.mean(confidences)) if confidences else 0.0
+            texts = [
+                text for (cx, cy), text in centers
+                if cell.x0 <= cx < cell.x1 and cell.y0 <= cy < cell.y1
+            ]
+            if texts:
+                record[col] = clean_text(" ".join(texts))
         rows.append(record)
     return rows
 
@@ -214,6 +222,45 @@ def _looks_like_day(text: str) -> bool:
     return bool(digits) and len(digits) <= 2 and 1 <= int(digits) <= 31
 
 
+def _infer_month_year(raw_rows: list[dict]) -> tuple[Optional[int], Optional[int]]:
+    """Infer month/year from the printed date cells, resolving M/D vs D/M.
+
+    Across a month's rows the month digit is constant while the day varies, so
+    whichever position is the most constant valid month (1..12) is the month.
+    """
+    from collections import Counter
+    from config import DATE_RE
+
+    firsts, seconds, years = [], [], []
+    for r in raw_rows:
+        m = DATE_RE.match(clean_text(r.get("date", "")))
+        if not m:
+            continue
+        firsts.append(int(m.group(1)))
+        seconds.append(int(m.group(2)))
+        y = int(m.group(3))
+        years.append(y + 2000 if y < 100 else y)
+
+    if not firsts:
+        return None, None
+
+    def dominant(vals):
+        val, n = Counter(vals).most_common(1)[0]
+        return val, n / len(vals)
+
+    f_val, f_ratio = dominant(firsts)
+    s_val, s_ratio = dominant(seconds)
+    if 1 <= f_val <= 12 and f_ratio >= s_ratio:
+        month = f_val
+    elif 1 <= s_val <= 12:
+        month = s_val
+    else:
+        month = f_val if 1 <= f_val <= 12 else (s_val if 1 <= s_val <= 12 else None)
+
+    year = Counter(years).most_common(1)[0][0] if years else None
+    return month, year
+
+
 def canonicalize(raw_rows: list[dict], month: Optional[int],
                  year: Optional[int]) -> list[dict]:
     """Validate values and force exactly days_in_month ordered rows.
@@ -224,8 +271,10 @@ def canonicalize(raw_rows: list[dict], month: Optional[int],
     output date is composed canonically from the day, month and year, so it is
     always a valid dd/mm/yy and matches the sheet's own sequence.
     """
-    year = year or datetime.now().year
-    month = month or datetime.now().month
+    # Prefer the month/year printed in the date cells over the current date.
+    inferred_month, inferred_year = _infer_month_year(raw_rows)
+    month = month or inferred_month or datetime.now().month
+    year = year or inferred_year or datetime.now().year
     n_days = days_in_month(month, year)
 
     # Keep only real data rows: drop header rows and fully empty grid noise.
@@ -260,12 +309,14 @@ def parse_document(grid: dict, images: dict, engine: OcrEngine) -> dict:
     body = find_body(grid["cells"])
     body_top_y = body[0][0].y0 if body else None
 
+    # One full-page OCR pass drives both the header and the table.
     full_lines = engine.read_full(gray)
+    logger.info("OCR found %d text lines on the page", len(full_lines))
     header = extract_header(full_lines, body_top_y)
 
     month = month_from_text(header.get("mois", "")) if header.get("mois") else None
 
-    raw_rows = read_body(body, gray, engine)
+    raw_rows = read_body_from_lines(body, full_lines)
     attendance = canonicalize(raw_rows, month=month, year=None)
 
     return {

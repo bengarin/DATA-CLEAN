@@ -99,8 +99,11 @@ class OcrEngine:
         lines: list[OcrLine] = []
         if result is None:
             return lines
-        # predict() may return a generator/iterator; materialise it.
-        if not isinstance(result, (list, tuple)):
+        # Normalise the container: a single OCRResult (dict) -> [result];
+        # a generator/iterator -> list; a list/tuple stays as-is.
+        if isinstance(result, dict):
+            result = [result]
+        elif not isinstance(result, (list, tuple)):
             try:
                 result = list(result)
             except TypeError:
