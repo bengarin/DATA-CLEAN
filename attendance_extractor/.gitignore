@@ -1,0 +1,7 @@
+# Generated outputs and caches (keep the folders via .gitkeep)
+output/*
+!output/.gitkeep
+input/*
+!input/.gitkeep
+__pycache__/
+*.pyc
