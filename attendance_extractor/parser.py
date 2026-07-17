@@ -203,6 +203,17 @@ def _looks_like_date(text: str) -> bool:
     return (1 <= a <= 31 and 1 <= b <= 12) or (1 <= b <= 31 and 1 <= a <= 12)
 
 
+def _looks_like_day(text: str) -> bool:
+    """True if the DATE cell anchors a real day: a full date OR a bare day
+    number 1..31 (some sheets print only "01", "02", … in the date column)."""
+    import re
+    t = clean_text(text)
+    if _looks_like_date(t):
+        return True
+    digits = re.sub(r"\D", "", t)
+    return bool(digits) and len(digits) <= 2 and 1 <= int(digits) <= 31
+
+
 def canonicalize(raw_rows: list[dict], month: Optional[int],
                  year: Optional[int]) -> list[dict]:
     """Validate values and force exactly days_in_month ordered rows.
@@ -223,7 +234,9 @@ def canonicalize(raw_rows: list[dict], month: Optional[int],
         if _is_header_row(r):
             continue
         hours = {c: normalize_hour(r.get(c, "")) for c in HOUR_COLUMNS}
-        has_content = any(hours.values()) or _looks_like_date(r.get("date", ""))
+        # Keep a row if it has any punch/OFF value OR its date cell anchors a
+        # real day (so an all-rest or empty-but-dated day stays in sequence).
+        has_content = any(hours.values()) or _looks_like_day(r.get("date", ""))
         if not has_content:
             continue
         data_rows.append(hours)

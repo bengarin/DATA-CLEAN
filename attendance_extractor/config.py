@@ -97,7 +97,9 @@ HEADER_FIELDS = {
 # missing minutes, a trailing "H"), then normalise to HH'H'MM.
 HOUR_STRICT = re.compile(r"^(OFF|[0-2]?[0-9]H[0-5][0-9])$", re.IGNORECASE)
 HOUR_LOOSE = re.compile(r"^\s*([0-2]?\d)\s*[Hh]\s*([0-5]\d)?\s*$")
-OFF_TOKENS = {"off", "0ff", "0f", "of"}
+# Rest-day markers seen on real sheets: "OFF" and "R"/"Repos" (jour de repos).
+# All are normalised to OFF. Common OCR confusions of OFF are included.
+OFF_TOKENS = {"off", "0ff", "0f", "of", "r", "repos", "rep"}
 
 # Date cell like d/m/yyyy, dd/mm/yy, d-m-yy … normalised to dd/mm/yy.
 DATE_RE = re.compile(r"^\s*(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})\s*$")

@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from config import OCR_LANG, OCR_MIN_CONFIDENCE, OCR_USE_ANGLE_CLS
@@ -46,9 +47,13 @@ class OcrEngine:
 
             logger.info("Initialising PaddleOCR (lang=%s)…", self._lang)
             # Constructor kwargs differ across major versions; try the newest
-            # names first (3.x: use_textline_orientation), then 2.x
-            # (use_angle_cls, show_log), then a bare lang-only fallback.
+            # names first (3.x), then 2.x, then a bare lang-only fallback. On
+            # 3.x we also disable the full-page document orientation/unwarping
+            # stages: they are meant for whole scans, add failure surface, and
+            # would distort the small single-cell crops we feed for reading.
             for kwargs in (
+                {"lang": self._lang, "use_textline_orientation": OCR_USE_ANGLE_CLS,
+                 "use_doc_orientation_classify": False, "use_doc_unwarping": False},
                 {"lang": self._lang, "use_textline_orientation": OCR_USE_ANGLE_CLS},
                 {"lang": self._lang, "use_angle_cls": OCR_USE_ANGLE_CLS, "show_log": False},
                 {"lang": self._lang},
@@ -62,53 +67,94 @@ class OcrEngine:
                 raise RuntimeError("Could not initialise PaddleOCR with any known signature")
         return self._ocr
 
+    @staticmethod
+    def _to_bgr(image: np.ndarray) -> np.ndarray:
+        """PaddleOCR expects a 3-channel image; grayscale crops are 2-D.
+
+        Passing a 2-D array makes Paddle read `img.shape[2]` internally and
+        raise 'tuple index out of range', so promote grayscale to BGR here.
+        """
+        if image is None:
+            return image
+        if image.ndim == 2:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        if image.ndim == 3 and image.shape[2] == 4:
+            return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        return image
+
     # ------------------------------------------------------------------ #
     # Result normalisation
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _parse_result(result) -> list[OcrLine]:
+    def _first_present(data: dict, keys: list[str]):
+        """Return the first key's value that exists (avoids `or` on arrays)."""
+        for k in keys:
+            if k in data and data[k] is not None:
+                return data[k]
+        return []
+
+    @classmethod
+    def _parse_result(cls, result) -> list[OcrLine]:
         """Normalise PaddleOCR output (2.x list form and 3.x dict form)."""
         lines: list[OcrLine] = []
-        if not result:
+        if result is None:
+            return lines
+        # predict() may return a generator/iterator; materialise it.
+        if not isinstance(result, (list, tuple)):
+            try:
+                result = list(result)
+            except TypeError:
+                return lines
+        if len(result) == 0:
             return lines
 
         first = result[0]
 
-        # ---- 3.x predict(): list[dict] with parallel arrays ----
+        # ---- 3.x predict(): list[OCRResult] (dict subclass) with arrays ----
         if isinstance(first, dict):
             data = first
-            texts = data.get("rec_texts") or data.get("rec_text") or []
-            scores = data.get("rec_scores") or data.get("rec_score") or []
-            boxes = data.get("rec_polys") or data.get("dt_polys") or data.get("boxes") or []
+            texts = cls._first_present(data, ["rec_texts", "rec_text"])
+            scores = cls._first_present(data, ["rec_scores", "rec_score"])
+            boxes = cls._first_present(data, ["rec_polys", "dt_polys", "boxes"])
+            n_scores, n_boxes = len(scores), len(boxes)
             for i, text in enumerate(texts):
-                conf = float(scores[i]) if i < len(scores) else 0.0
-                box = boxes[i].tolist() if i < len(boxes) and hasattr(boxes[i], "tolist") \
-                    else (boxes[i] if i < len(boxes) else [])
-                lines.append(OcrLine(clean_text(text), conf, box))
+                conf = float(scores[i]) if i < n_scores else 0.0
+                if i < n_boxes:
+                    box = boxes[i].tolist() if hasattr(boxes[i], "tolist") else boxes[i]
+                else:
+                    box = []
+                lines.append(OcrLine(clean_text(str(text)), conf, box))
             return lines
 
         # ---- 2.x ocr(): [[ [box, (text, conf)], ... ]] ----
-        page = result[0] if isinstance(first, list) else result
+        page = first if isinstance(first, list) else result
         for item in page:
             try:
                 box, (text, conf) = item
-                lines.append(OcrLine(clean_text(text), float(conf), box))
+                lines.append(OcrLine(clean_text(str(text)), float(conf), box))
             except (ValueError, TypeError):
                 continue
         return lines
 
     def _run(self, image: np.ndarray) -> list[OcrLine]:
         engine = self._engine()
+        img = self._to_bgr(image)
         # Prefer the modern predict() API; fall back to ocr().
         if hasattr(engine, "predict"):
             try:
-                return self._parse_result(engine.predict(image))
-            except Exception:  # noqa: BLE001 - fall back on any API mismatch
-                pass
-        try:
-            return self._parse_result(engine.ocr(image, cls=OCR_USE_ANGLE_CLS))
-        except TypeError:
-            return self._parse_result(engine.ocr(image))
+                return self._parse_result(engine.predict(img))
+            except Exception as exc:  # noqa: BLE001 - fall back on any API mismatch
+                logger.debug("predict() failed, trying ocr(): %s", exc)
+        for call in (lambda: engine.ocr(img, cls=OCR_USE_ANGLE_CLS),
+                     lambda: engine.ocr(img)):
+            try:
+                return self._parse_result(call())
+            except TypeError:
+                continue
+            except Exception as exc:  # noqa: BLE001 - a bad crop must not kill the batch
+                logger.debug("ocr() failed on a crop: %s", exc)
+                return []
+        return []
 
     # ------------------------------------------------------------------ #
     # Public API
