@@ -117,6 +117,9 @@ def _value_right_of(lines: list[OcrLine], label: OcrLine) -> str:
     for ln in lines:
         if ln is label or not ln.text:
             continue
+        # Skip a lone separator token (":") so it isn't taken as the value.
+        if ln.text.strip(" :") == "":
+            continue
         if abs(_box_cy(ln.box) - ly) > row_tol:
             continue
         dx = _box_cx(ln.box) - lx_right
@@ -124,7 +127,7 @@ def _value_right_of(lines: list[OcrLine], label: OcrLine) -> str:
             continue
         if best_dx is None or dx < best_dx:
             best, best_dx = ln, dx
-    return best.text if best else ""
+    return best.text.strip(" :").strip() if best else ""
 
 
 # --------------------------------------------------------------------------- #
@@ -350,10 +353,12 @@ def canonicalize(raw_rows: list[dict], month: Optional[int],
     output date is composed canonically from the day, month and year, so it is
     always a valid dd/mm/yy and matches the sheet's own sequence.
     """
-    # Prefer the month/year printed in the date cells over the current date.
+    # The printed date cells (many of them) are a more reliable source of the
+    # month than a single handwritten "Mois" word, which OCR often misreads
+    # (e.g. "Juin" -> "8"). Prefer the date-inferred month/year.
     inferred_month, inferred_year = _infer_month_year(raw_rows)
-    month = month or inferred_month or datetime.now().month
-    year = year or inferred_year or datetime.now().year
+    month = inferred_month or month or datetime.now().month
+    year = inferred_year or year or datetime.now().year
     n_days = days_in_month(month, year)
 
     # Keep only real data rows: drop header rows and fully empty grid noise.
