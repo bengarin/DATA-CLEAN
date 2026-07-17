@@ -18,6 +18,9 @@ input/  →  OpenCV preprocess (deskew · denoise · CLAHE)
 
 ```
 attendance_extractor/
+├── app.py             # web interface (upload a photo, see the table, download)
+├── templates/
+│   └── index.html     # the web UI
 ├── main.py            # batch entry point (processes every image in input/)
 ├── config.py          # all tunables: paths, layout template, regex, OCR
 ├── preprocess.py      # resize, deskew, denoise, contrast; per-cell retry
@@ -42,7 +45,18 @@ models automatically (a few hundred MB) — this needs internet access to one of
 PaddleOCR's model hosts (HuggingFace / ModelScope / BOS). After that it runs
 offline.
 
-## Run
+## Run — web interface (import a photo, see the data)
+
+```bash
+python app.py
+```
+
+Open **http://localhost:5000**, drag a scanned sheet onto the page, and click
+*Extraire les données*. The extracted header fields and the full attendance
+table are shown in the page, with one-click download of the generated
+**Excel / CSV / JSON**. (First extraction downloads the OCR models.)
+
+## Run — batch folder (hundreds of files, unattended)
 
 ```bash
 # 1. put one or more scanned sheets in input/

@@ -5,3 +5,4 @@ paddleocr>=2.7
 paddlepaddle>=2.6
 openpyxl>=3.1
 pandas>=2.0
+flask>=3.0

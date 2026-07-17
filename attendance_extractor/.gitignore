@@ -3,5 +3,6 @@ output/*
 !output/.gitkeep
 input/*
 !input/.gitkeep
+_uploads/
 __pycache__/
 *.pyc

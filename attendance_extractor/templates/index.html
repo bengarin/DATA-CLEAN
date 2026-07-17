@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pointage — Extraction</title>
+<style>
+  :root {
+    --bg: #0f1223; --panel: #171a2e; --panel2: #1e2238; --line: #2a2f4a;
+    --text: #e7e9f5; --muted: #9aa0c0; --accent: #6c5ce7; --accent2: #8a7bff;
+    --ok: #26c281; --off: #e08a3c; --err: #e35d6a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 50% -10%, #1b1f3a, var(--bg));
+    color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    min-height: 100vh; padding: 32px 16px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 1.9rem; margin: 0 0 4px;
+       background: linear-gradient(90deg, var(--accent2), #b8a9ff);
+       -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { text-align: center; color: var(--muted); margin: 0 0 26px; font-size: .95rem; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 16px; padding: 22px; margin-bottom: 22px; }
+
+  #drop { border: 2px dashed #3a406a; border-radius: 14px; padding: 34px 18px;
+          text-align: center; cursor: pointer; transition: .15s; background: var(--panel2); }
+  #drop.hover { border-color: var(--accent2); background: #232a48; }
+  #drop .ic { font-size: 2.2rem; }
+  #drop .t { font-weight: 600; margin-top: 8px; }
+  #drop .h { color: var(--muted); font-size: .82rem; margin-top: 4px; }
+  #file { display: none; }
+
+  .previewRow { display: flex; gap: 18px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  #preview { max-height: 190px; border-radius: 10px; border: 1px solid var(--line); display: none; }
+  .btn { border: none; border-radius: 10px; padding: 13px 22px; font-weight: 700;
+         font-size: .98rem; cursor: pointer; color: #fff;
+         background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.sec { background: var(--panel2); border: 1px solid var(--line); color: var(--text); }
+
+  .status { text-align: center; color: var(--muted); margin: 10px 0; min-height: 20px; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #444;
+             border-top-color: var(--accent2); border-radius: 50%; animation: spin .8s linear infinite;
+             vertical-align: middle; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #results { display: none; }
+  .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .meta .card { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .meta .k { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .5px; }
+  .meta .v { font-weight: 600; margin-top: 3px; word-break: break-word; }
+  .meta .v.empty { color: #5b6088; font-style: italic; font-weight: 400; }
+
+  .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .downloads a { text-decoration: none; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .9rem; }
+  th, td { border: 1px solid var(--line); padding: 7px 6px; text-align: center; }
+  thead th { background: #232a48; color: var(--text); }
+  tbody tr:nth-child(even) { background: #191d34; }
+  td.off { color: var(--off); font-weight: 700; }
+  td.val { color: var(--ok); font-weight: 600; }
+  td.date { color: var(--muted); }
+  .tableWrap { overflow-x: auto; }
+  .err { color: var(--err); text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Pointage de Présence</h1>
+  <p class="sub">Importer une feuille scannée — extraction automatique du tableau</p>
+
+  <div class="panel">
+    <div id="drop">
+      <div class="ic">📄⬆️</div>
+      <div class="t">Cliquer ou glisser une image ici</div>
+      <div class="h">JPG, PNG — feuille de pointage scannée</div>
+    </div>
+    <input type="file" id="file" accept="image/*">
+    <div class="previewRow">
+      <img id="preview" alt="aperçu">
+      <button class="btn" id="go" disabled>Extraire les données</button>
+    </div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="panel" id="results">
+    <div class="meta" id="meta"></div>
+    <div class="downloads" id="downloads"></div>
+    <div class="tableWrap">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th rowspan="2">DATE</th>
+            <th colspan="2">MATIN</th>
+            <th colspan="2">SOIR</th>
+          </tr>
+          <tr><th>ENTRE</th><th>SORTIE</th><th>ENTRE</th><th>SORTIE</th></tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('file');
+  const preview = document.getElementById('preview');
+  const goBtn = document.getElementById('go');
+  const statusEl = document.getElementById('status');
+  const results = document.getElementById('results');
+  let chosen = null;
+
+  drop.addEventListener('click', () => fileInput.click());
+  ['dragover','dragenter'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('hover'); }));
+  ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('hover'); }));
+  drop.addEventListener('drop', ev => { if (ev.dataTransfer.files.length) setFile(ev.dataTransfer.files[0]); });
+  fileInput.addEventListener('change', () => { if (fileInput.files.length) setFile(fileInput.files[0]); });
+
+  function setFile(f) {
+    chosen = f;
+    preview.src = URL.createObjectURL(f);
+    preview.style.display = 'block';
+    goBtn.disabled = false;
+    results.style.display = 'none';
+    statusEl.textContent = '';
+  }
+
+  const METAS = [['animateur','Animateur'],['magasin','Magasin'],['societe','Société'],['marque','Marque'],['mois','Mois']];
+
+  goBtn.addEventListener('click', async () => {
+    if (!chosen) return;
+    goBtn.disabled = true;
+    results.style.display = 'none';
+    statusEl.innerHTML = '<span class="spinner"></span>Analyse en cours… (le premier passage télécharge les modèles OCR)';
+
+    const fd = new FormData();
+    fd.append('image', chosen);
+    try {
+      const res = await fetch('/extract', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) { statusEl.innerHTML = '<span class="err">' + (data.error || 'Erreur') + '</span>'; goBtn.disabled = false; return; }
+      render(data);
+      statusEl.textContent = '';
+    } catch (e) {
+      statusEl.innerHTML = '<span class="err">Erreur réseau : ' + e.message + '</span>';
+    }
+    goBtn.disabled = false;
+  });
+
+  function render(data) {
+    const r = data.record;
+    // meta cards
+    const meta = document.getElementById('meta');
+    meta.innerHTML = '';
+    METAS.forEach(([k, label]) => {
+      const v = (r[k] || '').trim();
+      meta.innerHTML += `<div class="card"><div class="k">${label}</div>
+        <div class="v ${v ? '' : 'empty'}">${v || '—'}</div></div>`;
+    });
+    // downloads
+    const dl = document.getElementById('downloads');
+    dl.innerHTML = '';
+    const labels = { xlsx: '⬇ Excel (.xlsx)', csv: '⬇ CSV', json: '⬇ JSON' };
+    Object.entries(data.downloads).forEach(([fmt, name]) => {
+      dl.innerHTML += `<a href="/download/${encodeURIComponent(name)}"><button class="btn sec">${labels[fmt] || fmt}</button></a>`;
+    });
+    // table
+    const tb = document.getElementById('tbody');
+    tb.innerHTML = '';
+    (r.attendance || []).forEach(row => {
+      tb.innerHTML += `<tr>
+        <td class="date">${row.date || ''}</td>
+        ${cell(row.matin_entre)}${cell(row.matin_sortie)}
+        ${cell(row.soir_entre)}${cell(row.soir_sortie)}
+      </tr>`;
+    });
+    results.style.display = 'block';
+    results.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function cell(v) {
+    v = (v || '').trim();
+    if (!v) return '<td></td>';
+    if (v.toUpperCase() === 'OFF') return '<td class="off">OFF</td>';
+    return `<td class="val">${v}</td>`;
+  }
+</script>
+</body>
+</html>
