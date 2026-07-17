@@ -40,6 +40,8 @@ class OcrEngine:
     def __init__(self, lang: str = OCR_LANG):
         self._lang = lang
         self._ocr = None
+        self._rec = None
+        self._rec_failed = False
 
     def _engine(self):
         if self._ocr is None:
@@ -72,6 +74,50 @@ class OcrEngine:
             if self._ocr is None:
                 raise RuntimeError("Could not initialise PaddleOCR with any known signature")
         return self._ocr
+
+    def _rec_model(self):
+        """Recognition-only model for single-cell crops.
+
+        Full-page OCR misses values whose detector box is weak; but a cropped
+        cell IS the text line, so running just the recogniser on it reads
+        values that detection skipped. Uses the same rec model the pipeline
+        already cached (PP-OCRv6_medium_rec), so no extra download.
+        """
+        if self._rec is None and not self._rec_failed:
+            try:
+                from paddleocr import TextRecognition
+
+                self._rec = TextRecognition(enable_mkldnn=False)
+            except Exception as exc:  # noqa: BLE001 - optional refinement
+                logger.warning("TextRecognition unavailable: %s", exc)
+                self._rec_failed = True
+        return self._rec
+
+    def recognize_cell(self, crop: np.ndarray) -> tuple[str, float]:
+        """Recognition-only read of one cell crop. Returns (text, confidence)."""
+        model = self._rec_model()
+        if model is None or crop is None or crop.size == 0:
+            return "", 0.0
+
+        img = self._to_bgr(crop)
+        h = img.shape[0]
+        if h < 48:  # the recogniser works best at >= ~48px line height
+            scale = 48.0 / max(1, h)
+            img = cv2.resize(img, None, fx=scale, fy=scale,
+                             interpolation=cv2.INTER_CUBIC)
+        try:
+            result = model.predict(img)
+        except Exception as exc:  # noqa: BLE001 - one bad crop must not abort
+            logger.debug("recognize_cell failed: %s", exc)
+            return "", 0.0
+
+        for item in (result or []):
+            if isinstance(item, dict):
+                text = item.get("rec_text") or ""
+                score = item.get("rec_score")
+                if text:
+                    return clean_text(str(text)), float(score or 0.0)
+        return "", 0.0
 
     @staticmethod
     def _to_bgr(image: np.ndarray) -> np.ndarray:

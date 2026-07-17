@@ -182,18 +182,42 @@ def _line_center(box) -> tuple[float, float]:
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
-def extract_table_from_lines(lines: list[OcrLine]) -> Optional[list[dict]]:
+def extract_table_from_lines(lines: list[OcrLine],
+                             row_bounds: Optional[list[int]] = None) -> Optional[list[dict]]:
     """Reconstruct the table from OCR geometry, independent of vertical rules.
 
     Real photos make vertical grid-line detection unreliable (a missed line
     merges two columns). Instead we anchor:
       * columns  on the printed header labels DATE / ENTRE / SORTIE (which OCR
         reads well), giving five x-anchors, and
-      * rows     on the DATE column itself (one date per row), giving a y-anchor
-        per day.
-    Every other value is snapped to its nearest column anchor and nearest date
-    row. Returns None if the header labels can't be found (caller falls back).
+      * rows     on the horizontal grid lines (row_bounds) when available —
+        each band between two rules is one day, so a handwritten value that
+        drifts above/below its printed day number still lands in the right
+        row. Falls back to using the DATE column's own lines as y-anchors.
+    Every other value is snapped to its nearest column anchor and its row band.
+    Returns None if the header labels can't be found (caller falls back).
     """
+    geom = _locate_geometry(lines, row_bounds)
+    if geom is None:
+        return None
+    return _assign_lines_to_rows(lines, geom)
+
+
+class _TableGeometry:
+    """Resolved table geometry: column boundaries and row bands (y0, y1)."""
+
+    __slots__ = ("anchors", "col_bounds", "bands", "header_bottom", "positional")
+
+    def __init__(self, anchors, col_bounds, bands, header_bottom, positional):
+        self.anchors = anchors            # 5 column-centre x anchors
+        self.col_bounds = col_bounds      # 6 x boundaries for the 5 columns
+        self.bands = bands                # list of (y0, y1) row bands
+        self.header_bottom = header_bottom
+        self.positional = positional      # True when bands come from grid rules
+
+
+def _locate_geometry(lines: list[OcrLine],
+                     row_bounds: Optional[list[int]] = None) -> Optional[_TableGeometry]:
     date_label_x = None
     value_label_xs: list[float] = []
     header_bottom = 0.0
@@ -201,7 +225,7 @@ def extract_table_from_lines(lines: list[OcrLine]) -> Optional[list[dict]]:
         if not ln.box or not ln.text:
             continue
         norm = normalize_label(ln.text)
-        cx, cy = _line_center(ln.box)
+        cx, _ = _line_center(ln.box)
         bottom = max(p[1] for p in ln.box)
         if norm == "date":
             date_label_x = cx if date_label_x is None else min(date_label_x, cx)
@@ -214,39 +238,142 @@ def extract_table_from_lines(lines: list[OcrLine]) -> Optional[list[dict]]:
         return None  # not enough anchors -> let the caller use the grid method
 
     value_label_xs.sort()
-    # Keep the four value columns (matin entre/sortie, soir entre/sortie).
+    # The four value columns (matin entre/sortie, soir entre/sortie).
     anchors = [date_label_x] + value_label_xs[:4]
 
-    # Data lines sit below the header band.
-    data = [ln for ln in lines
-            if ln.box and ln.text and _line_center(ln.box)[1] > header_bottom + 4]
-    if not data:
-        return None
+    # Column boundaries = midpoints between anchors, edges extended half a gap.
+    col_bounds = [anchors[0] - (anchors[1] - anchors[0]) / 2]
+    for i in range(len(anchors) - 1):
+        col_bounds.append((anchors[i] + anchors[i + 1]) / 2)
+    col_bounds.append(anchors[-1] + (anchors[-1] - anchors[-2]) / 2)
 
-    # Row anchors = the y of each DATE-column line (nearest the date anchor).
-    col_gap = min(anchors[i + 1] - anchors[i] for i in range(len(anchors) - 1))
-    date_tol = max(30.0, col_gap * 0.6)
-    date_rows = sorted(
-        (_line_center(ln.box)[1], ln)
-        for ln in data
-        if abs(_line_center(ln.box)[0] - date_label_x) <= date_tol
-    )
-    if not date_rows:
-        return None
-    row_centers = [cy for cy, _ in date_rows]
+    # Row bands. Preferred: the horizontal grid rules (each band between two
+    # rules is exactly one day, immune to handwriting drift). Fallback: the y
+    # of each line detected in the DATE column.
+    bands: list[tuple[float, float]] = []
+    positional = False
+    if row_bounds:
+        rules = [y for y in sorted(row_bounds) if y > header_bottom - 5]
+        band_candidates = [
+            (float(rules[i]), float(rules[i + 1])) for i in range(len(rules) - 1)
+        ]
+        heights = [y1 - y0 for y0, y1 in band_candidates]
+        if len(band_candidates) >= 10:
+            # Discard degenerate bands (double-detected rules).
+            median_h = sorted(heights)[len(heights) // 2]
+            bands = [b for b in band_candidates if (b[1] - b[0]) > median_h * 0.4]
+            positional = True
 
-    def nearest(idx_from, value):
-        return min(range(len(idx_from)), key=lambda i: abs(idx_from[i] - value))
+    if not bands:
+        col_gap = min(anchors[i + 1] - anchors[i] for i in range(len(anchors) - 1))
+        date_tol = max(30.0, col_gap * 0.6)
+        centers = sorted(
+            _line_center(ln.box)[1]
+            for ln in lines
+            if ln.box and ln.text and _line_center(ln.box)[1] > header_bottom + 4
+            and abs(_line_center(ln.box)[0] - date_label_x) <= date_tol
+        )
+        if not centers:
+            return None
+        # Bands = midpoints between consecutive date centres.
+        edges = [header_bottom]
+        for i in range(len(centers) - 1):
+            edges.append((centers[i] + centers[i + 1]) / 2)
+        edges.append(centers[-1] + (centers[-1] - edges[-1]))
+        bands = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
 
+    return _TableGeometry(anchors, col_bounds, bands, header_bottom, positional)
+
+
+def _assign_lines_to_rows(lines: list[OcrLine], geom: _TableGeometry) -> list[dict]:
+    """Place every OCR line below the header into its row band and column."""
     rows: list[dict] = [
-        {"date": "", **{c: "" for c in HOUR_COLUMNS}} for _ in row_centers
+        {"date": "", **{c: "" for c in HOUR_COLUMNS}} for _ in geom.bands
     ]
-    for ln in data:
+
+    def band_index(cy: float) -> Optional[int]:
+        for i, (y0, y1) in enumerate(geom.bands):
+            if y0 <= cy < y1:
+                return i
+        return None
+
+    def col_index(cx: float) -> int:
+        return min(range(len(geom.anchors)),
+                   key=lambda i: abs(geom.anchors[i] - cx))
+
+    for ln in lines:
+        if not ln.box or not ln.text:
+            continue
+        # The bands themselves start below the header, so they are the only
+        # boundary needed; but never let a printed column label (ENTRE…) that
+        # a rule sliced into the first band be taken as data.
+        if normalize_label(ln.text) in ("date", "entre", "sortie", "matin",
+                                        "matain", "soir"):
+            continue
         cx, cy = _line_center(ln.box)
-        r = nearest(row_centers, cy)
-        c = nearest(anchors, cx)
-        col = TABLE_COLUMNS[c]
+        r = band_index(cy)
+        if r is None:
+            continue
+        col = TABLE_COLUMNS[col_index(cx)]
         rows[r][col] = clean_text(f"{rows[r][col]} {ln.text}")
+    return rows
+
+
+def _cell_has_ink(gray: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> bool:
+    """True if the cell region contains real ink (not just paper/grid rules)."""
+    from config import CELL_MIN_INK_FRACTION
+
+    h, w = gray.shape[:2]
+    # Inset to keep the printed rules out of the ink count.
+    ix0, iy0 = max(0, x0 + 4), max(0, y0 + 3)
+    ix1, iy1 = min(w, x1 - 4), min(h, y1 - 3)
+    if ix1 - ix0 < 6 or iy1 - iy0 < 6:
+        return False
+    region = gray[iy0:iy1, ix0:ix1]
+    # Ink = pixels clearly darker than the cell's own paper level.
+    paper = float(np.percentile(region, 80))
+    ink_fraction = float(np.mean(region < paper - 60))
+    return ink_fraction >= CELL_MIN_INK_FRACTION
+
+
+def refine_rows_with_cells(rows: list[dict], geom: _TableGeometry,
+                           images: dict, engine: OcrEngine) -> list[dict]:
+    """Second pass: recognition-only re-read of cells the page pass left empty.
+
+    Full-page detection sometimes skips faint handwriting entirely. For every
+    empty cell whose region actually contains ink, crop it and run just the
+    recogniser (no detection) on the crop. A recovered value is accepted only
+    when it is confident AND validates for its column — so a blank cell can
+    never gain an invented value.
+    """
+    from config import OCR_REC_ACCEPT_CONFIDENCE
+
+    color = images["color"]
+    gray = images["gray"]
+    recovered = 0
+    for r, (y0, y1) in enumerate(geom.bands):
+        for c, col in enumerate(TABLE_COLUMNS):
+            if rows[r][col]:
+                continue
+            x0 = int(geom.col_bounds[c])
+            x1 = int(geom.col_bounds[c + 1])
+            iy0, iy1 = int(y0), int(y1)
+            if not _cell_has_ink(gray, x0, iy0, x1, iy1):
+                continue
+            crop = color[max(0, iy0 - 2):iy1 + 2, max(0, x0):x1]
+            text, conf = engine.recognize_cell(crop)
+            if not text or conf < OCR_REC_ACCEPT_CONFIDENCE:
+                continue
+            if col == "date":
+                if _looks_like_day(text):
+                    rows[r][col] = text
+                    recovered += 1
+            else:
+                if normalize_hour(text):
+                    rows[r][col] = text
+                    recovered += 1
+    if recovered:
+        logger.info("Cell-recognition pass recovered %d values", recovered)
     return rows
 
 
@@ -346,7 +473,7 @@ def _infer_month_year(raw_rows: list[dict]) -> tuple[Optional[int], Optional[int
 
 
 def canonicalize(raw_rows: list[dict], month: Optional[int],
-                 year: Optional[int]) -> list[dict]:
+                 year: Optional[int], positional: bool = False) -> list[dict]:
     """Validate values and force exactly days_in_month ordered rows.
 
     The sheet lists the days of the month in order, so day assignment is driven
@@ -354,6 +481,11 @@ def canonicalize(raw_rows: list[dict], month: Optional[int],
     ambiguity of the printed dates and to a missing/unreadable date cell. The
     output date is composed canonically from the day, month and year, so it is
     always a valid dd/mm/yy and matches the sheet's own sequence.
+
+    With positional=True the rows came from the table's own grid bands (one
+    band = one day), so empty rows in the middle are REAL empty days and are
+    kept in place; only trailing blank bands are trimmed. Without it, empty
+    rows are treated as detection noise and dropped.
     """
     # The printed date cells (many of them) are a more reliable source of the
     # month than a single handwritten "Mois" word, which OCR often misreads
@@ -363,18 +495,22 @@ def canonicalize(raw_rows: list[dict], month: Optional[int],
     year = inferred_year or year or datetime.now().year
     n_days = days_in_month(month, year)
 
-    # Keep only real data rows: drop header rows and fully empty grid noise.
     data_rows: list[dict] = []
     for r in raw_rows:
         if _is_header_row(r):
             continue
         hours = {c: normalize_hour(r.get(c, "")) for c in HOUR_COLUMNS}
-        # Keep a row if it has any punch/OFF value OR its date cell anchors a
-        # real day (so an all-rest or empty-but-dated day stays in sequence).
-        has_content = any(hours.values()) or _looks_like_day(r.get("date", ""))
-        if not has_content:
-            continue
+        if not positional:
+            # Keep a row only if it has a punch/OFF value or an anchoring day.
+            has_content = any(hours.values()) or _looks_like_day(r.get("date", ""))
+            if not has_content:
+                continue
         data_rows.append(hours)
+
+    if positional:
+        # Trim trailing blank bands (below the last day of the month).
+        while data_rows and not any(data_rows[-1].values()):
+            data_rows.pop()
 
     # Map the ordered data rows onto days 1..N (trim extras, pad missing).
     result: list[dict] = []
@@ -406,15 +542,22 @@ def parse_document(grid: dict, images: dict, engine: OcrEngine) -> dict:
 
     month = month_from_text(header.get("mois", "")) if header.get("mois") else None
 
-    # Prefer the OCR-anchored reconstruction (robust to missed vertical rules);
-    # fall back to the detected grid cells if the header labels aren't found.
-    raw_rows = extract_table_from_lines(full_lines)
-    if raw_rows is None:
+    # Preferred method: columns anchored on the printed header labels, rows on
+    # the horizontal grid rules (one band = one day, immune to handwriting
+    # drift), then a recognition-only pass over inked-but-unread cells.
+    geom = _locate_geometry(full_lines, grid.get("rows"))
+    positional = False
+    if geom is not None:
+        raw_rows = _assign_lines_to_rows(full_lines, geom)
+        raw_rows = refine_rows_with_cells(raw_rows, geom, images, engine)
+        positional = geom.positional
+        logger.info("Reconstructed %d table rows (%s bands)",
+                    len(raw_rows), "grid-rule" if positional else "date-anchored")
+    else:
         logger.info("Header anchors not found; using grid-cell mapping")
         raw_rows = read_body_from_lines(body, full_lines)
-    else:
-        logger.info("Reconstructed %d table rows from OCR anchors", len(raw_rows))
-    attendance = canonicalize(raw_rows, month=month, year=None)
+    attendance = canonicalize(raw_rows, month=month, year=None,
+                              positional=positional)
 
     return {
         "animateur": header.get("animateur", ""),

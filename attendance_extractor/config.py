@@ -130,6 +130,15 @@ OCR_USE_ANGLE_CLS = True
 # preprocessing before we accept (or blank) its value.
 OCR_MIN_CONFIDENCE = 0.55
 
+# A recognition-only re-read of an empty cell is accepted only above this
+# confidence AND if the text validates as an hour/OFF/day. Guards against the
+# recogniser hallucinating a value in a genuinely blank cell.
+OCR_REC_ACCEPT_CONFIDENCE = float(os.environ.get("ATTENDANCE_REC_CONF", "0.60"))
+
+# A cell whose dark-ink pixel fraction is below this is treated as blank and
+# never sent to the recogniser at all (the strongest anti-hallucination guard).
+CELL_MIN_INK_FRACTION = 0.006
+
 # Padding (px) added around each detected cell before it is cropped for OCR,
 # so glyphs touching the grid lines are not clipped.
 CELL_CROP_PADDING = 4
