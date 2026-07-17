@@ -72,6 +72,17 @@ def extract_header(lines: list[OcrLine], body_top_y: Optional[int]) -> dict:
     return header
 
 
+def _table_header_top(lines: list[OcrLine]) -> Optional[float]:
+    """Y above which lines are metadata: the top of the table's column-header
+    band, located from the printed labels DATE/ENTRE/SORTIE/MATIN/SOIR."""
+    ys = []
+    for ln in lines:
+        if ln.box and normalize_label(ln.text) in ("date", "entre", "sortie",
+                                                    "matin", "matain", "soir"):
+            ys.append(min(p[1] for p in ln.box))
+    return min(ys) if ys else None
+
+
 def _box_cy(box) -> float:
     return float(np.mean([p[1] for p in box]))
 
@@ -166,12 +177,80 @@ def _line_center(box) -> tuple[float, float]:
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
-def read_body_from_lines(body: list[list[Cell]], lines: list[OcrLine]) -> list[dict]:
-    """Assign each full-page OCR line to the body cell that contains it.
+def extract_table_from_lines(lines: list[OcrLine]) -> Optional[list[dict]]:
+    """Reconstruct the table from OCR geometry, independent of vertical rules.
 
-    Reading the whole page once and mapping text boxes onto the detected grid
-    is far more reliable than OCR-ing each tiny single-value crop — PaddleOCR's
-    detector often finds nothing in an isolated cell-sized image.
+    Real photos make vertical grid-line detection unreliable (a missed line
+    merges two columns). Instead we anchor:
+      * columns  on the printed header labels DATE / ENTRE / SORTIE (which OCR
+        reads well), giving five x-anchors, and
+      * rows     on the DATE column itself (one date per row), giving a y-anchor
+        per day.
+    Every other value is snapped to its nearest column anchor and nearest date
+    row. Returns None if the header labels can't be found (caller falls back).
+    """
+    date_label_x = None
+    value_label_xs: list[float] = []
+    header_bottom = 0.0
+    for ln in lines:
+        if not ln.box or not ln.text:
+            continue
+        norm = normalize_label(ln.text)
+        cx, cy = _line_center(ln.box)
+        bottom = max(p[1] for p in ln.box)
+        if norm == "date":
+            date_label_x = cx if date_label_x is None else min(date_label_x, cx)
+            header_bottom = max(header_bottom, bottom)
+        elif norm in ("entre", "sortie"):
+            value_label_xs.append(cx)
+            header_bottom = max(header_bottom, bottom)
+
+    if date_label_x is None or len(value_label_xs) < 4:
+        return None  # not enough anchors -> let the caller use the grid method
+
+    value_label_xs.sort()
+    # Keep the four value columns (matin entre/sortie, soir entre/sortie).
+    anchors = [date_label_x] + value_label_xs[:4]
+
+    # Data lines sit below the header band.
+    data = [ln for ln in lines
+            if ln.box and ln.text and _line_center(ln.box)[1] > header_bottom + 4]
+    if not data:
+        return None
+
+    # Row anchors = the y of each DATE-column line (nearest the date anchor).
+    col_gap = min(anchors[i + 1] - anchors[i] for i in range(len(anchors) - 1))
+    date_tol = max(30.0, col_gap * 0.6)
+    date_rows = sorted(
+        (_line_center(ln.box)[1], ln)
+        for ln in data
+        if abs(_line_center(ln.box)[0] - date_label_x) <= date_tol
+    )
+    if not date_rows:
+        return None
+    row_centers = [cy for cy, _ in date_rows]
+
+    def nearest(idx_from, value):
+        return min(range(len(idx_from)), key=lambda i: abs(idx_from[i] - value))
+
+    rows: list[dict] = [
+        {"date": "", **{c: "" for c in HOUR_COLUMNS}} for _ in row_centers
+    ]
+    for ln in data:
+        cx, cy = _line_center(ln.box)
+        r = nearest(row_centers, cy)
+        c = nearest(anchors, cx)
+        col = TABLE_COLUMNS[c]
+        rows[r][col] = clean_text(f"{rows[r][col]} {ln.text}")
+    return rows
+
+
+def read_body_from_lines(body: list[list[Cell]], lines: list[OcrLine]) -> list[dict]:
+    """Fallback: assign each full-page OCR line to the grid cell containing it.
+
+    Used only when the header labels needed by extract_table_from_lines are not
+    found. Reading the whole page once and mapping boxes onto the detected grid
+    is still far more reliable than OCR-ing each tiny single-value crop.
     """
     centers = [(_line_center(ln.box), ln.text) for ln in lines if ln.box and ln.text]
 
@@ -306,18 +385,28 @@ def canonicalize(raw_rows: list[dict], month: Optional[int],
 def parse_document(grid: dict, images: dict, engine: OcrEngine) -> dict:
     """Full parse: header + table -> the specified JSON structure."""
     body = find_body(grid["cells"])
-    body_top_y = body[0][0].y0 if body else None
 
     # OCR runs on the deskewed *colour* image (PaddleOCR is trained on natural
     # images; the heavily processed binary/CLAHE hurts its detector). The grid
     # cells and this image share the same coordinate space.
     full_lines = engine.read_full(images["color"])
     logger.info("OCR found %d text lines on the page", len(full_lines))
-    header = extract_header(full_lines, body_top_y)
+
+    # Metadata (header fields) sits above the table's own header band. Find that
+    # band from the printed column labels rather than the (possibly wrong) grid.
+    metadata_cutoff = _table_header_top(full_lines)
+    header = extract_header(full_lines, metadata_cutoff)
 
     month = month_from_text(header.get("mois", "")) if header.get("mois") else None
 
-    raw_rows = read_body_from_lines(body, full_lines)
+    # Prefer the OCR-anchored reconstruction (robust to missed vertical rules);
+    # fall back to the detected grid cells if the header labels aren't found.
+    raw_rows = extract_table_from_lines(full_lines)
+    if raw_rows is None:
+        logger.info("Header anchors not found; using grid-cell mapping")
+        raw_rows = read_body_from_lines(body, full_lines)
+    else:
+        logger.info("Reconstructed %d table rows from OCR anchors", len(raw_rows))
     attendance = canonicalize(raw_rows, month=month, year=None)
 
     return {
