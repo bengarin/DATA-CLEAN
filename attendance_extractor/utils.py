@@ -94,20 +94,41 @@ def normalize_hour(raw: str) -> str:
     if compact in OFF_TOKENS or compact == "off":
         return "OFF"
 
-    if HOUR_STRICT.match(text):
-        h, _, m = text.upper().partition("H")
-        return f"{int(h):02d}H{m if m else '00'}"
-
-    loose = HOUR_LOOSE.match(text)
-    if loose:
-        h = int(loose.group(1))
-        m = loose.group(2) or "00"
-        if 0 <= h <= 23:
-            return f"{h:02d}H{m}"
+    # Correct the digit/letter confusions handwriting OCR makes (O->0, l->1,
+    # S->5 …) around the hour, then re-check. This recovers "l4H00"->14H00,
+    # "12HOO"->12H00, "2OH"->20H00 without hard-coding any specific value.
+    fixed = _fix_hour_digits(text)
+    for candidate in (text, fixed):
+        if HOUR_STRICT.match(candidate):
+            h, _, m = candidate.upper().partition("H")
+            return f"{int(h):02d}H{m if m else '00'}"
+        loose = HOUR_LOOSE.match(candidate)
+        if loose:
+            h = int(loose.group(1))
+            m = loose.group(2) or "00"
+            if 0 <= h <= 23:
+                return f"{h:02d}H{m}"
 
     # Not OFF and not a valid hour: treat as noise / empty. This also drops any
     # header text ("ENTRE", "SORTIE") that a row-detection overshoot may pass in.
     return ""
+
+
+# Letter -> digit map for the common OCR confusions on handwritten hours.
+_HOUR_DIGIT_FIX = str.maketrans({
+    "O": "0", "o": "0", "Q": "0", "D": "0",
+    "l": "1", "I": "1", "|": "1", "i": "1",
+    "S": "5", "s": "5", "B": "8", "Z": "2", "z": "2", "g": "9",
+})
+
+
+def _fix_hour_digits(token: str) -> str:
+    """Map digit-look-alike letters to digits, preserving the H separator."""
+    # Keep the hour separator intact, fix everything around it.
+    parts = re.split(r"([Hh])", token, maxsplit=1)
+    return "".join(
+        p if p in ("H", "h") else p.translate(_HOUR_DIGIT_FIX) for p in parts
+    )
 
 
 def normalize_date(raw: str, default_month: Optional[int] = None,

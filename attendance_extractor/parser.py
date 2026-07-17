@@ -117,8 +117,10 @@ def _value_right_of(lines: list[OcrLine], label: OcrLine) -> str:
     for ln in lines:
         if ln is label or not ln.text:
             continue
-        # Skip a lone separator token (":") so it isn't taken as the value.
-        if ln.text.strip(" :") == "":
+        # Skip separator/junk tokens (":", ".", a stray single character) so a
+        # real value further right is chosen instead.
+        cleaned = ln.text.strip(" :.-")
+        if len(cleaned) < 2:
             continue
         if abs(_box_cy(ln.box) - ly) > row_tol:
             continue
