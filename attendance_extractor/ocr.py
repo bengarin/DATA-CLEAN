@@ -146,8 +146,11 @@ class OcrEngine:
         if hasattr(engine, "predict"):
             try:
                 return self._parse_result(engine.predict(img))
-            except Exception as exc:  # noqa: BLE001 - fall back on any API mismatch
-                logger.debug("predict() failed, trying ocr(): %s", exc)
+            except TypeError:
+                pass  # signature mismatch -> try the ocr() fallback
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PaddleOCR predict() failed: %s", exc)
+                return []
         for call in (lambda: engine.ocr(img, cls=OCR_USE_ANGLE_CLS),
                      lambda: engine.ocr(img)):
             try:
@@ -155,7 +158,7 @@ class OcrEngine:
             except TypeError:
                 continue
             except Exception as exc:  # noqa: BLE001 - a bad crop must not kill the batch
-                logger.debug("ocr() failed on a crop: %s", exc)
+                logger.warning("PaddleOCR ocr() failed: %s", exc)
                 return []
         return []
 

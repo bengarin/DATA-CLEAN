@@ -305,12 +305,13 @@ def canonicalize(raw_rows: list[dict], month: Optional[int],
 # --------------------------------------------------------------------------- #
 def parse_document(grid: dict, images: dict, engine: OcrEngine) -> dict:
     """Full parse: header + table -> the specified JSON structure."""
-    gray = images["gray"]
     body = find_body(grid["cells"])
     body_top_y = body[0][0].y0 if body else None
 
-    # One full-page OCR pass drives both the header and the table.
-    full_lines = engine.read_full(gray)
+    # OCR runs on the deskewed *colour* image (PaddleOCR is trained on natural
+    # images; the heavily processed binary/CLAHE hurts its detector). The grid
+    # cells and this image share the same coordinate space.
+    full_lines = engine.read_full(images["color"])
     logger.info("OCR found %d text lines on the page", len(full_lines))
     header = extract_header(full_lines, body_top_y)
 
