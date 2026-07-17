@@ -51,10 +51,16 @@ class OcrEngine:
             # 3.x we also disable the full-page document orientation/unwarping
             # stages: they are meant for whole scans, add failure surface, and
             # would distort the small single-cell crops we feed for reading.
+            # enable_mkldnn=False avoids a oneDNN inference bug in paddlepaddle
+            # 3.x on some CPUs ("ConvertPirAttribute2RuntimeAttribute not
+            # support"), which otherwise makes every predict() return nothing.
             for kwargs in (
                 {"lang": self._lang, "use_textline_orientation": OCR_USE_ANGLE_CLS,
-                 "use_doc_orientation_classify": False, "use_doc_unwarping": False},
-                {"lang": self._lang, "use_textline_orientation": OCR_USE_ANGLE_CLS},
+                 "use_doc_orientation_classify": False, "use_doc_unwarping": False,
+                 "enable_mkldnn": False},
+                {"lang": self._lang, "use_textline_orientation": OCR_USE_ANGLE_CLS,
+                 "enable_mkldnn": False},
+                {"lang": self._lang, "enable_mkldnn": False},
                 {"lang": self._lang, "use_angle_cls": OCR_USE_ANGLE_CLS, "show_log": False},
                 {"lang": self._lang},
             ):

@@ -42,7 +42,9 @@ def main() -> int:
     ocr = None
     for kwargs in (
         {"lang": OCR_LANG, "use_textline_orientation": True,
-         "use_doc_orientation_classify": False, "use_doc_unwarping": False},
+         "use_doc_orientation_classify": False, "use_doc_unwarping": False,
+         "enable_mkldnn": False},
+        {"lang": OCR_LANG, "enable_mkldnn": False},
         {"lang": OCR_LANG},
     ):
         try:
